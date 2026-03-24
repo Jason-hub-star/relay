@@ -496,6 +496,7 @@ class RelayService:
         context_policy: Optional[str] = None,
         instructions: Optional[str] = None,
         parent_run_id: Optional[str] = None,
+        extra_input_payload: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         session = self._require_session(from_session_id)
         target_agent = self.repo.get_agent(name=to_agent_name)
@@ -518,6 +519,7 @@ class RelayService:
                 "required_output_schema": schema_name(task_enum),
                 "artifacts": snapshot["artifacts"],
                 "parent_result": (parent_result or {}).get("normalized_result", {}),
+                **(extra_input_payload or {}),
             },
             parent_run_id=parent_run_id,
         )
@@ -930,6 +932,8 @@ class RelayService:
             return packet, prompt
         if packet["context_policy"] == ContextPolicy.COMPACT.value:
             return packet, prompt
+        if packet["task_type"] == TaskType.IMPLEMENT.value:
+            return self._compact_retry_packet(packet=packet, target_agent=target_agent)
         threshold = int(os.environ.get("RELAY_CODEX_PROMPT_SOFT_LIMIT", "12000"))
         if len(prompt) <= threshold:
             return packet, prompt
@@ -941,10 +945,13 @@ class RelayService:
         packet: Dict[str, Any],
         target_agent: Dict[str, Any],
     ) -> tuple[Dict[str, Any], str]:
-        compact_payload = self._compact_input_payload(packet["input_payload"])
+        aggressive = target_agent["kind"] == AgentKind.CODEX.value and packet["task_type"] == TaskType.IMPLEMENT.value
+        compact_payload = self._compact_input_payload(packet["input_payload"], aggressive=aggressive)
         compact_instructions = (
             f"{packet['instructions']} Use the compact handoff context and focus on the highest-signal answer."
         )
+        if aggressive:
+            compact_instructions += " This is an aggressive compact handoff for an implement step, so avoid restating the full context."
         updated = self.repo.update_task_packet(
             packet["id"],
             context_policy=ContextPolicy.COMPACT.value,
@@ -953,21 +960,31 @@ class RelayService:
         )
         return updated, build_delegate_prompt(updated, target_agent)
 
-    def _compact_input_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def _compact_input_payload(self, payload: Dict[str, Any], *, aggressive: bool = False) -> Dict[str, Any]:
         artifacts = dict(payload["artifacts"])
+        file_limit = 12 if aggressive else 20
+        diff_limit = 2500 if aggressive else 4000
+        status_limit = 600 if aggressive else 1200
+        tree_limit = 1000 if aggressive else 1800
+        convo_limit = 1200 if aggressive else 2500
+        attachment_limit = 4 if aggressive else 8
+        goal_limit = 300 if aggressive else 600
+        nested_items = 4 if aggressive else 8
+        nested_string = 300 if aggressive else 600
         compact_artifacts = {
-            "files": artifacts.get("files", [])[:20],
-            "git_diff": self._truncate_text(artifacts.get("git_diff", ""), 4000),
-            "git_status": self._truncate_text(artifacts.get("git_status", ""), 1200),
-            "tree_excerpt": self._truncate_text(artifacts.get("tree_excerpt", ""), 1800),
-            "conversation_excerpt": self._truncate_text(artifacts.get("conversation_excerpt", ""), 2500),
-            "attachments": artifacts.get("attachments", [])[:8],
+            "files": artifacts.get("files", [])[:file_limit],
+            "git_diff": self._truncate_text(artifacts.get("git_diff", ""), diff_limit),
+            "git_status": self._truncate_text(artifacts.get("git_status", ""), status_limit),
+            "tree_excerpt": self._truncate_text(artifacts.get("tree_excerpt", ""), tree_limit),
+            "conversation_excerpt": self._truncate_text(artifacts.get("conversation_excerpt", ""), convo_limit),
+            "attachments": artifacts.get("attachments", [])[:attachment_limit],
         }
         return {
             **payload,
-            "goal": self._truncate_text(payload.get("goal", ""), 600),
+            "goal": self._truncate_text(payload.get("goal", ""), goal_limit),
             "artifacts": compact_artifacts,
-            "parent_result": self._compact_nested(payload.get("parent_result", {})),
+            "parent_result": self._compact_nested(payload.get("parent_result", {}), max_items=nested_items, max_string=nested_string),
+            "original_result": self._compact_nested(payload.get("original_result", {}), max_items=nested_items, max_string=nested_string),
         }
 
     def _compact_nested(self, value: Any, *, max_items: int = 8, max_string: int = 600) -> Any:
@@ -1007,7 +1024,7 @@ class RelayService:
         defaults = {
             TaskType.REVIEW: "Focus on bugs, regressions, and missing tests. Include file and line when possible.",
             TaskType.PLAN: "Provide a concrete implementation plan with steps and risks.",
-            TaskType.IMPLEMENT: "Suggest focused code changes and the next actions needed.",
+            TaskType.IMPLEMENT: "Suggest focused code changes and the next actions needed. Prefer concise actionable changes over restating the full context.",
             TaskType.OPTIMIZE_PROMPT: "Rewrite the prompt to be clearer and more actionable without changing the goal.",
             TaskType.WEB_RESEARCH: "Summarize the key facts and include source URLs when known.",
             TaskType.PDF_ANALYSIS: "Summarize the important sections and cite document sections.",

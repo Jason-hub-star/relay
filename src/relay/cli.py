@@ -81,7 +81,7 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "tui":
         from relay.tui import run_tui
 
-        run_tui(service, inline=not args.fullscreen)
+        run_tui(service, inline=args.inline)
         return
 
     if args.command == "agent":

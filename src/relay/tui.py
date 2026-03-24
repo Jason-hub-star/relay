@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import threading
 import time
@@ -72,6 +73,10 @@ JOB_OPTIONS = [
 SLASH_COMMANDS = [
     {"name": "/workflow", "description": "Open the workflow picker."},
     {"name": "/workflow new", "description": "Create a new workflow."},
+    {"name": "/workflow list", "description": "List saved workflows."},
+    {"name": "/workflow inspect", "description": "Inspect a saved or active workflow."},
+    {"name": "/workflow rename", "description": "Rename a saved or active workflow."},
+    {"name": "/workflow delete", "description": "Delete a saved or active workflow."},
     {"name": "/workflow use", "description": "Use a saved workflow by name."},
     {"name": "/workflow save", "description": "Save the active workflow with a name."},
     {"name": "/workflow off", "description": "Clear the pinned workflow."},
@@ -81,6 +86,8 @@ SLASH_COMMANDS = [
     {"name": "/agents", "description": "Show AI readiness."},
     {"name": "/login", "description": "Open login for one AI or all missing ones."},
     {"name": "/progress", "description": "Open or close the progress drawer."},
+    {"name": "/progress on", "description": "Open the progress drawer."},
+    {"name": "/progress off", "description": "Close the progress drawer."},
     {"name": "/trace last", "description": "Show the last internal workflow trace."},
     {"name": "/resume last", "description": "Replay the last unfinished workflow."},
     {"name": "/rerun last", "description": "Run the last prompt again with the same workflow."},
@@ -90,6 +97,65 @@ SLASH_COMMANDS = [
     {"name": "/export last-result", "description": "Save the latest structured result to a file."},
     {"name": "/help", "description": "Show command help."},
 ]
+
+PROVIDER_ALIASES = {
+    "claude": ["claude", "claude-main", "클로드"],
+    "codex": ["codex", "codex-main", "코덱스"],
+    "gemini": ["gemini", "gemini-main", "제미나이", "gemini cli"],
+    "qwen": ["qwen", "qwen-main", "큐웬", "qwen code"],
+}
+
+APPROVAL_ALIASES = {
+    "plan": ["plan", "계획"],
+    "default": ["default", "기본"],
+    "auto-edit": ["auto-edit", "auto edit", "자동수정", "자동 수정"],
+    "yolo": ["yolo"],
+}
+
+WORKFLOW_SEQUENCE_MARKERS = [
+    " then ",
+    " next ",
+    " after that ",
+    " and then ",
+    " 그다음 ",
+    " 다음 ",
+    " 그리고 ",
+    " 그 후 ",
+    " 이후 ",
+]
+
+WORKFLOW_MAIN_MARKERS = [
+    " main ",
+    " as main ",
+    " main provider ",
+    " main ai ",
+    " 메인 ",
+    " 메인으로 ",
+    " 메인 ai ",
+    " 주 ai ",
+]
+
+WORKFLOW_SEND_BACK_MARKERS = [
+    " send it back ",
+    " send back ",
+    " return it ",
+    " return back ",
+    " finally send it back ",
+    " 마지막엔 다시 ",
+    " 마지막에 다시 ",
+    " 다시 돌려줘 ",
+    " 다시 보내줘 ",
+    " 마지막엔 ",
+]
+
+TASK_ALIASES = {
+    TaskType.REVIEW.value: ["review", "critic", "검토", "리뷰"],
+    TaskType.IMPLEMENT.value: ["implement", "build", "code", "구현", "빌드", "만들어"],
+    TaskType.WEB_RESEARCH.value: ["research", "search", "investigate", "조사", "검색", "찾아봐"],
+    TaskType.OPTIMIZE_PROMPT.value: ["simplify", "rewrite", "refine", "simpler", "단순화", "쉽게", "정리"],
+    TaskType.CONTEXT_DIGEST.value: ["digest", "summarize context", "context digest", "맥락 정리", "컨텍스트 정리"],
+    TaskType.CUSTOM.value: ["custom", "help", "do this", "해줘", "도와줘"],
+}
 
 
 def friendly_task_label(task_type: str) -> str:
@@ -172,6 +238,323 @@ def prefers_fast_direct_route(prompt: str) -> bool:
     return not any(marker in lowered for marker in heavy_markers)
 
 
+def simplify_natural_command_text(text: str) -> str:
+    lowered = text.strip().lower()
+    lowered = re.sub(r"[!?.,:;]+", " ", lowered)
+    lowered = re.sub(r"\s+", " ", lowered)
+    return lowered.strip()
+
+
+def resolve_agent_reference(text: str, agents: list[dict[str, Any]]) -> Optional[str]:
+    simplified = simplify_natural_command_text(text)
+    for agent in agents:
+        name = str(agent["name"]).lower()
+        if name in simplified:
+            return agent["name"]
+    for kind, aliases in PROVIDER_ALIASES.items():
+        if any(alias in simplified for alias in aliases):
+            for agent in agents:
+                if str(agent.get("kind")) == kind:
+                    return agent["name"]
+    return None
+
+
+def resolve_approval_mode_reference(text: str) -> Optional[str]:
+    simplified = simplify_natural_command_text(text)
+    for mode, aliases in APPROVAL_ALIASES.items():
+        if any(alias in simplified for alias in aliases):
+            return mode
+    return None
+
+
+def _agent_mentions(text: str, agents: list[dict[str, Any]]) -> list[tuple[int, str]]:
+    simplified = simplify_natural_command_text(text)
+    mentions: list[tuple[int, str]] = []
+    seen: set[tuple[int, str]] = set()
+    for agent in agents:
+        names = [str(agent["name"]).lower()]
+        names.extend(PROVIDER_ALIASES.get(str(agent.get("kind")), []))
+        for alias in names:
+            start = simplified.find(alias.lower())
+            if start == -1:
+                continue
+            marker = (start, agent["name"])
+            if marker in seen:
+                continue
+            seen.add(marker)
+            mentions.append(marker)
+    mentions.sort(key=lambda item: item[0])
+    return mentions
+
+
+def resolve_task_reference(text: str) -> str:
+    simplified = simplify_natural_command_text(text)
+    for task_type, aliases in TASK_ALIASES.items():
+        if any(alias in simplified for alias in aliases):
+            return task_type
+    return TaskType.CUSTOM.value
+
+
+def parse_natural_workflow(text: str, *, agents: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    simplified = f" {simplify_natural_command_text(text)} "
+    if not any(marker in simplified for marker in WORKFLOW_MAIN_MARKERS):
+        return None
+    if not any(marker in simplified for marker in WORKFLOW_SEQUENCE_MARKERS):
+        return None
+    mentions = _agent_mentions(text, agents)
+    if len(mentions) < 2:
+        return None
+
+    main_agent = mentions[0][1]
+    send_back = any(marker in simplified for marker in WORKFLOW_SEND_BACK_MARKERS)
+    filtered_mentions = list(mentions)
+    if send_back and filtered_mentions[-1][1] == main_agent and len(filtered_mentions) >= 3:
+        filtered_mentions = filtered_mentions[:-1]
+    step_mentions = filtered_mentions[1:]
+    if not step_mentions:
+        return None
+    steps: list[dict[str, Any]] = []
+    for index, (start, name) in enumerate(step_mentions, start=1):
+        end = step_mentions[index][0] if index < len(step_mentions) else len(simplified)
+        segment = simplified[start:end]
+        task_type = resolve_task_reference(segment)
+        steps.append(
+            {
+                "id": f"step_{index}",
+                "agent_name": name,
+                "task_type": task_type,
+                "label": friendly_task_label(task_type),
+            }
+        )
+    if not steps:
+        return None
+    parts = [main_agent]
+    for step in steps:
+        parts.append(f"{step['agent_name']} {friendly_task_label(step['task_type'])}")
+    if send_back or steps:
+        parts.append("Send Back")
+    return {
+        "id": f"workflow_{random_suffix(8)}",
+        "name": " -> ".join(parts),
+        "main_agent": main_agent,
+        "mode": "workflow",
+        "send_back": True if steps else send_back,
+        "steps": steps,
+    }
+
+
+def translate_natural_command(
+    text: str,
+    *,
+    agents: list[dict[str, Any]],
+    progress_open: bool,
+) -> Optional[str]:
+    simplified = simplify_natural_command_text(text)
+    if not simplified:
+        return None
+
+    workflow_named_rename_match = re.match(
+        r"^(?:rename workflow|rename the workflow|워크플로우)\s+(.+?)\s+(?:to|이름을)\s+(.+?)(?:으로 바꿔줘|로 바꿔줘|으로 변경해줘|로 변경해줘)?$",
+        simplified,
+    )
+    if workflow_named_rename_match:
+        old_name = workflow_named_rename_match.group(1).strip()
+        new_name = workflow_named_rename_match.group(2).strip()
+        if old_name and new_name:
+            return f"/workflow rename {old_name} {new_name}"
+
+    workflow_rename_match = re.match(
+        r"^(?:rename this workflow to|rename workflow to|이 워크플로우 이름을|워크플로우 이름을)\s+(.+?)(?:으로 바꿔줘|로 바꿔줘|으로 변경해줘|로 변경해줘)?$",
+        simplified,
+    )
+    if workflow_rename_match:
+        return f"/workflow rename active {workflow_rename_match.group(1).strip()}"
+
+    workflow_inspect_match = re.match(
+        r"^(?:inspect workflow|show workflow|show saved workflow|open workflow|워크플로우 보여줘|워크플로우 확인해줘|워크플로우 열어줘)\s+(.+)$",
+        simplified,
+    )
+    if workflow_inspect_match:
+        return f"/workflow inspect {workflow_inspect_match.group(1).strip()}"
+
+    if simplified in {
+        "show workflows",
+        "show saved workflows",
+        "list workflows",
+        "list saved workflows",
+        "what workflows do i have",
+        "저장된 workflow 보여줘",
+        "저장된 워크플로우 보여줘",
+        "워크플로우 목록 보여줘",
+        "워크플로우 리스트 보여줘",
+        "저장된 워크플로우 목록 보여줘",
+    }:
+        return "/workflow list"
+
+    if simplified in {
+        "show current workflow",
+        "inspect current workflow",
+        "show active workflow",
+        "inspect active workflow",
+        "현재 workflow 보여줘",
+        "현재 워크플로우 보여줘",
+        "현재 워크플로우 확인해줘",
+        "활성 워크플로우 보여줘",
+        "활성 워크플로우 확인해줘",
+    }:
+        return "/workflow inspect active"
+
+    if simplified in {
+        "delete this workflow",
+        "remove this workflow",
+        "이 workflow 지워줘",
+        "이 워크플로우 지워줘",
+        "현재 워크플로우 삭제해줘",
+    }:
+        return "/workflow delete active"
+
+    workflow_delete_match = re.match(
+        r"^(?:delete workflow|remove workflow)\s+(.+)$",
+        simplified,
+    )
+    if workflow_delete_match:
+        target = workflow_delete_match.group(1).strip()
+        if target:
+            return f"/workflow delete {target}"
+    workflow_delete_korean_match = re.match(r"^워크플로우\s+(.+?)\s+(?:삭제해줘|지워줘)$", simplified)
+    if workflow_delete_korean_match:
+        target = workflow_delete_korean_match.group(1).strip()
+        if target:
+            return f"/workflow delete {target}"
+
+    workflow_save_match = re.match(
+        r"^(?:save this workflow as|save workflow as|save this as|이 워크플로우를\s*저장해줘|이 워크플로우를\s*이름으로 저장해줘|이걸\s*이름으로 저장해줘)\s+(.+)$",
+        simplified,
+    )
+    if workflow_save_match:
+        return f"/workflow save {workflow_save_match.group(1).strip()}"
+
+    workflow_named_save_match = re.match(
+        r"^(?:name this workflow|call this workflow|이 워크플로우 이름을|이 워크플로우를)\s+(.+?)(?:으로 저장해줘|로 저장해줘|으로 해줘|로 해줘)?$",
+        simplified,
+    )
+    if workflow_named_save_match:
+        candidate = workflow_named_save_match.group(1).strip()
+        if candidate and candidate not in {"저장해줘", "이름으로"}:
+            return f"/workflow save {candidate}"
+
+    if simplified in {
+        "save this workflow",
+        "save this as default",
+        "use this workflow by default",
+        "keep this as default",
+        "save this and use it",
+        "이 워크플로우 저장해줘",
+        "앞으로 이걸 기본으로 써",
+        "이걸 기본으로 써",
+        "이 워크플로우를 기본으로 써",
+        "앞으로 이 워크플로우를 써",
+    }:
+        return "/workflow save default"
+
+    if simplified in {"help", "show help", "open help", "도움말", "명령어", "명령어 보여줘", "도움말 보여줘"}:
+        return "/help"
+
+    if simplified in {
+        "show agents",
+        "show agent status",
+        "agent status",
+        "show ai status",
+        "에이전트 상태",
+        "에이전트 상태 보여줘",
+        "ai 상태 보여줘",
+        "현재 ai 상태 보여줘",
+    }:
+        return "/agents"
+
+    if simplified in {
+        "show provider",
+        "current provider",
+        "main provider",
+        "what is my current provider",
+        "현재 프로바이더",
+        "현재 프로바이더 보여줘",
+        "현재 메인 ai 뭐야",
+        "메인 프로바이더 뭐야",
+    }:
+        return "/provider"
+
+    provider_agent = resolve_agent_reference(simplified, agents)
+    provider_verbs = [
+        "use ",
+        "switch to ",
+        "set ",
+        "make ",
+        "change to ",
+        "바꿔",
+        "설정",
+        "사용",
+        "써줘",
+    ]
+    provider_targets = ["main", "provider", "메인", "프로바이더"]
+    if provider_agent and any(verb in simplified for verb in provider_verbs) and any(target in simplified for target in provider_targets):
+        return f"/provider use {provider_agent}"
+    if provider_agent and re.search(r"(?:메인|프로바이더).*(?:클로드|코덱스|제미나이|큐웬|claude|codex|gemini|qwen)", simplified):
+        return f"/provider use {provider_agent}"
+    if provider_agent and re.search(r"(?:클로드|코덱스|제미나이|큐웬|claude|codex|gemini|qwen).*(?:메인|프로바이더)", simplified):
+        return f"/provider use {provider_agent}"
+
+    if simplified in {"approval mode", "show approval mode", "승인 모드", "승인 모드 보여줘"}:
+        return "/approval-mode"
+    approval_mode = resolve_approval_mode_reference(simplified)
+    if approval_mode and ("approval" in simplified or "승인" in simplified or "mode" in simplified or "모드" in simplified):
+        return f"/approval-mode {approval_mode}"
+
+    if simplified in {"show last trace", "trace last", "last trace", "마지막 트레이스 보여줘", "마지막 trace 보여줘", "마지막 내부 과정 보여줘"}:
+        return "/trace last"
+    if simplified in {"rerun last", "run last again", "rerun the last prompt", "마지막 작업 다시", "방금 작업 다시", "마지막 프롬프트 다시"}:
+        return "/rerun last"
+    if simplified in {"resume last", "resume the last workflow", "continue the last workflow", "마지막 작업 이어서", "지난 작업 이어서", "마지막 워크플로우 이어서"}:
+        return "/resume last"
+
+    if simplified in {"show progress", "open progress", "진행상황 보여줘", "진행 상황 보여줘"}:
+        return "/progress on" if not progress_open else "/progress"
+    if simplified in {"hide progress", "close progress", "진행상황 숨겨줘", "진행 상황 숨겨줘"}:
+        return "/progress off" if progress_open else "/progress off"
+
+    if simplified in {"check logins", "check login", "로그인 확인", "로그인 상태 확인"}:
+        return "/login"
+    if provider_agent and any(token in simplified for token in ["login", "log in", "sign in", "로그인"]):
+        return f"/login {provider_agent}"
+
+    if simplified in {"turn workflow off", "disable workflow", "clear workflow", "워크플로우 꺼줘", "워크플로우 해제", "워크플로우 끄기"}:
+        return "/workflow off"
+    if simplified in {"new workflow", "create workflow", "open workflow", "워크플로우 만들기", "새 워크플로우", "워크플로우 열어줘"}:
+        return "/workflow new"
+
+    workflow_use_match = re.match(
+        r"^(?:use workflow|open workflow|switch to workflow|set workflow to|워크플로우 사용|워크플로우 열기|워크플로우로 바꿔줘|워크플로우를 써줘)\s+(.+)$",
+        simplified,
+    )
+    if workflow_use_match:
+        return f"/workflow use {workflow_use_match.group(1).strip()}"
+
+    workflow_save_match = re.match(r"^(?:save workflow as|save workflow|워크플로우 저장|워크플로우 이름으로 저장)\s+(.+)$", simplified)
+    if workflow_save_match:
+        return f"/workflow save {workflow_save_match.group(1).strip()}"
+
+    if simplified in {"copy transcript", "트랜스크립트 복사", "대화 내용 복사"}:
+        return "/copy transcript"
+    if simplified in {"copy last result", "copy last response", "마지막 결과 복사", "마지막 응답 복사"}:
+        return "/copy last-result"
+    if simplified in {"export transcript", "트랜스크립트 저장", "대화 내용 저장"}:
+        return "/export transcript"
+    if simplified in {"export last result", "마지막 결과 저장", "마지막 응답 저장"}:
+        return "/export last-result"
+
+    return None
+
+
 def workflow_preview(workflow: Optional[dict[str, Any]]) -> str:
     if not workflow:
         return "No workflow selected."
@@ -184,6 +567,23 @@ def workflow_preview(workflow: Optional[dict[str, Any]]) -> str:
     if workflow.get("send_back"):
         parts.append("Send Back")
     return " -> ".join(parts)
+
+
+def format_workflow_summary(workflow: dict[str, Any], *, is_active: bool = False) -> str:
+    lines = [f"{'* ' if is_active else '- '}{workflow['name']}"]
+    lines.append(f"  main: {workflow.get('main_agent') or 'none'}")
+    lines.append(f"  mode: {workflow.get('mode') or 'workflow'}")
+    lines.append(f"  send back: {'yes' if workflow.get('send_back') else 'no'}")
+    steps = workflow.get("steps", [])
+    if not steps:
+        lines.append("  steps: none")
+    else:
+        lines.append("  steps:")
+        for index, step in enumerate(steps, start=1):
+            label = str(step.get("label") or "").strip()
+            suffix = f" [{label}]" if label else ""
+            lines.append(f"    {index}. {step['agent_name']} -> {friendly_task_label(step['task_type'])}{suffix}")
+    return "\n".join(lines)
 
 
 def normalize_display_text(text: str) -> str:
@@ -302,6 +702,15 @@ def render_normalized_result(task_type: str, normalized: Optional[dict[str, Any]
             return fallback
         return "No result."
     return "\n".join(lines)
+
+
+def normalize_terminal_environment(*, inline: bool) -> None:
+    if inline:
+        return
+    if os.environ.get("TERM", "").strip().lower() in {"", "dumb"}:
+        os.environ["TERM"] = "xterm-256color"
+    if not os.environ.get("COLORTERM", "").strip():
+        os.environ["COLORTERM"] = "truecolor"
 
 
 def build_status_strip(agents: list[dict[str, Any]], statuses: dict[str, dict[str, Any]]) -> Text:
@@ -518,19 +927,20 @@ class RelayShellApp(App[None]):
     CSS = """
     Screen {
         layout: vertical;
+        height: 100%;
         background: #111111;
         color: #f3f3f3;
-        overflow-y: auto;
+        overflow-y: hidden;
     }
     Screen:inline {
         height: auto;
         min-height: 8;
         border: none;
+        overflow-y: auto;
     }
     #root {
         layout: vertical;
-        height: auto;
-        min-height: 8;
+        height: 100%;
         padding: 0;
     }
     #status-strip {
@@ -540,7 +950,7 @@ class RelayShellApp(App[None]):
         background: transparent;
     }
     #transcript-box {
-        height: auto;
+        height: 1fr;
         min-height: 6;
         padding: 0 1;
         overflow: auto;
@@ -658,6 +1068,10 @@ class RelayShellApp(App[None]):
             yield Input(placeholder="Type a prompt or / for commands", id="prompt-input")
 
     def on_mount(self) -> None:
+        if self.inline_mode:
+            self.query_one("#root", Vertical).styles.height = "auto"
+            self.query_one("#root", Vertical).styles.min_height = 8
+            self.query_one("#transcript-box", Static).styles.height = "auto"
         cleanup = self.service.cleanup_stale_state()
         self._refresh_logins()
         self._add_notice("Relay is ready.")
@@ -847,6 +1261,21 @@ class RelayShellApp(App[None]):
             text = resolve_slash_command(text, self._command_index)
             self._handle_slash_command(text)
             return
+        natural_workflow = parse_natural_workflow(text, agents=self.service.list_user_agents())
+        if natural_workflow:
+            self.store.mark_seen()
+            self.store.save_workflow(natural_workflow, set_active=True)
+            self._add_notice(f"Pinned workflow: {natural_workflow['name']}", kind="command")
+            self.refresh_ui()
+            return
+        natural_command = translate_natural_command(
+            text,
+            agents=self.service.list_user_agents(),
+            progress_open=self.progress_open,
+        )
+        if natural_command:
+            self._handle_slash_command(natural_command)
+            return
         self._manual_transcript = ""
         self._prune_notices_for_chat()
         workflow = self.store.get_active_workflow()
@@ -883,6 +1312,27 @@ class RelayShellApp(App[None]):
             ]
             for status in self.service.check_logins(cwd=os.getcwd()):
                 lines.append(f"- {status['agent_name']}: {friendly_status_label(status['status'])}")
+            lines.extend(
+                [
+                    "",
+                    "Common commands:",
+                    "- /provider use gemini-main",
+                    "- /workflow list",
+                    "- /workflow inspect active",
+                    "- /rerun last",
+                    "- /resume last",
+                    "",
+                    "Natural-language examples:",
+                    "- Use Gemini as main provider",
+                    "- 제미나이 메인으로 바꿔줘",
+                    "- show saved workflows",
+                    "- 현재 워크플로우 보여줘",
+                    "- rename this workflow to review chain",
+                    "- 이 워크플로우를 문서흐름으로 저장해줘",
+                    "- Resume the last workflow",
+                    "- 마지막 작업 이어서",
+                ]
+            )
             self._add_notice("\n".join(lines), kind="command")
             return
         if command == "/agents":
@@ -943,6 +1393,14 @@ class RelayShellApp(App[None]):
             self.progress_open = toggle_progress_drawer_state(self.progress_open)
             self.refresh_ui()
             return
+        if command == "/progress on":
+            self.progress_open = True
+            self.refresh_ui()
+            return
+        if command == "/progress off":
+            self.progress_open = False
+            self.refresh_ui()
+            return
         if command == "/trace last":
             self._manual_transcript = self._format_trace_last()
             self.refresh_ui()
@@ -964,9 +1422,64 @@ class RelayShellApp(App[None]):
                 self._handle_workflow_modal,
             )
             return
+        if command == "/workflow list":
+            workflows = self.store.list_workflows()
+            active = self.store.get_active_workflow()
+            if not workflows:
+                self._add_notice("No saved workflows yet.", kind="command")
+                return
+            lines = ["Saved workflows:"]
+            for workflow in workflows:
+                lines.append(format_workflow_summary(workflow, is_active=active is not None and workflow["id"] == active["id"]))
+            self._add_notice("\n".join(lines), kind="command")
+            return
+        if command.startswith("/workflow inspect"):
+            target = command[len("/workflow inspect") :].strip() or "active"
+            workflow = self._resolve_workflow_reference(target)
+            if not workflow:
+                self._add_notice("No workflow matched that name.", kind="error")
+                return
+            self._add_notice(format_workflow_summary(workflow, is_active=self.store.get_active_workflow() == workflow), kind="command")
+            return
         if command == "/workflow off":
             self.store.set_active_workflow(None)
             self._add_notice("Pinned workflow cleared.", kind="command")
+            return
+        if command == "/workflow rename":
+            self._add_notice("Usage: /workflow rename <active|name> <new-name>", kind="error")
+            return
+        if command.startswith("/workflow rename "):
+            rest = command[len("/workflow rename ") :].strip()
+            if not rest:
+                self._add_notice("Usage: /workflow rename <active|name> <new-name>", kind="error")
+                return
+            parts = rest.split(maxsplit=1)
+            if len(parts) < 2:
+                self._add_notice("Usage: /workflow rename <active|name> <new-name>", kind="error")
+                return
+            workflow = self._resolve_workflow_reference(parts[0])
+            new_name = parts[1].strip()
+            if not workflow:
+                self._add_notice("No workflow matched that name.", kind="error")
+                return
+            if not new_name:
+                self._add_notice("New workflow name cannot be empty.", kind="error")
+                return
+            updated = dict(workflow)
+            updated["name"] = new_name
+            self.store.save_workflow(updated, set_active=self.store.get_active_workflow() == workflow)
+            self._add_notice(f"Renamed workflow to {new_name}.", kind="command")
+            return
+        if command == "/workflow delete":
+            command = "/workflow delete active"
+        if command.startswith("/workflow delete "):
+            target = command[len("/workflow delete ") :].strip() or "active"
+            workflow = self._resolve_workflow_reference(target)
+            if not workflow:
+                self._add_notice("No workflow matched that name.", kind="error")
+                return
+            self.store.delete_workflow(workflow["id"])
+            self._add_notice(f"Deleted workflow: {workflow['name']}", kind="command")
             return
         if command.startswith("/workflow use "):
             name = command[len("/workflow use ") :].strip().lower()
@@ -1149,12 +1662,10 @@ class RelayShellApp(App[None]):
                     },
                 )
                 send_to_live_session(helper_session, prompt)
-                original_text = str((original_output or {}).get("display_text") or "").strip()
-                if original_text:
-                    send_to_live_session(
-                        helper_session,
-                        f"Original answer from {workflow['main_agent']}:\n{original_text}",
-                    )
+                send_to_live_session(
+                    helper_session,
+                    f"Original answer from {workflow['main_agent']} captured in packet context.",
+                )
                 time.sleep(0.1)
                 for index, step in enumerate(workflow.get("steps", [])):
                     if index < resume_from_step:
@@ -1171,12 +1682,23 @@ class RelayShellApp(App[None]):
                     )
                     self._update_step_state(index, "running", "Working...", "")
                     title = step.get("label") or f"{friendly_task_label(step['task_type'])} for {workflow['main_agent']}"
+                    extra_input_payload = None
+                    if index == 0 and original_output is not None and not ((last_view or {}).get("run", {}).get("id") or resume_parent_run_id):
+                        extra_input_payload = {
+                            "original_result": {
+                                "agent_name": workflow["main_agent"],
+                                "status": original_output.get("status"),
+                                "display_text": self.service._truncate_text(str(original_output.get("display_text") or ""), 2000),
+                                "error": self.service._truncate_text(str(original_output.get("error") or ""), 600),
+                            }
+                        }
                     view = self.service.delegate(
                         from_session_id=helper_session["id"],
                         to_agent_name=step["agent_name"],
                         task_type=step["task_type"],
                         title=title,
                         parent_run_id=(last_view or {}).get("run", {}).get("id") or resume_parent_run_id or None,
+                        extra_input_payload=extra_input_payload,
                     )
                     last_view = view
                     completed_views.append(view)
@@ -1411,10 +1933,22 @@ class RelayShellApp(App[None]):
 
     def _find_workflow_by_name(self, name: str) -> Optional[dict[str, Any]]:
         lowered = name.strip().lower()
-        for workflow in self.store.list_workflows():
-            if workflow["name"].lower() == lowered:
+        if not lowered:
+            return None
+        workflows = self.store.list_workflows()
+        for workflow in workflows:
+            if workflow["id"].lower() == lowered or workflow["name"].lower() == lowered:
                 return workflow
+        partial_matches = [workflow for workflow in workflows if lowered in workflow["name"].lower()]
+        if len(partial_matches) == 1:
+            return partial_matches[0]
         return None
+
+    def _resolve_workflow_reference(self, raw: str) -> Optional[dict[str, Any]]:
+        name = raw.strip()
+        if not name or name.lower() == "active":
+            return self.store.get_active_workflow()
+        return self._find_workflow_by_name(name)
 
     def _focus_prompt_input(self) -> None:
         try:
@@ -1730,5 +2264,6 @@ def build_preset_workflow(
     }
 
 
-def run_tui(service: RelayService, *, inline: bool = True) -> None:
+def run_tui(service: RelayService, *, inline: bool = False) -> None:
+    normalize_terminal_environment(inline=inline)
     RelayShellApp(service, inline_mode=inline).run(inline=inline, inline_no_clear=inline, mouse=False)

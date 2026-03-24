@@ -269,6 +269,25 @@ class ServiceTests(unittest.TestCase):
         finally:
             service.close_session(session["id"])
 
+    def test_codex_implement_starts_with_compact_context(self) -> None:
+        tempdir, _repo, service, root = self._create_service()
+        self.addCleanup(tempdir.cleanup)
+        session = self._open_session(service, str(root))
+        try:
+            delegated = service.delegate(
+                from_session_id=session["id"],
+                to_agent_name="codex-review",
+                task_type="implement",
+                title="Implement auth changes",
+                )
+            self.assertEqual(delegated["packet"]["context_policy"], "compact")
+            self.assertIn("compact handoff context", delegated["packet"]["instructions"].lower())
+            self.assertIn("aggressive compact handoff", delegated["packet"]["instructions"].lower())
+            self.assertLessEqual(len(delegated["packet"]["input_payload"]["goal"]), 300)
+            self.assertLessEqual(len(delegated["packet"]["input_payload"]["artifacts"]["conversation_excerpt"]), 1200)
+        finally:
+            service.close_session(session["id"])
+
     def test_agent_profiles_expose_recommendations(self) -> None:
         tempdir, _repo, service, _root = self._create_service()
         self.addCleanup(tempdir.cleanup)

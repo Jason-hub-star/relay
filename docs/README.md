@@ -25,6 +25,8 @@ Use these for documents that change frequently while the product is actively evo
   - durable product or architecture decisions
 - [EXECUTION-CHECKLIST.md](/Users/family/jason/relay/docs/status/EXECUTION-CHECKLIST.md)
   - prioritized execution backlog
+- [TEST-MATRIX.md](/Users/family/jason/relay/docs/status/TEST-MATRIX.md)
+  - practical validation coverage grouped by must-pass, known-risk, and optional
 
 ### `docs/ref`
 

@@ -21,15 +21,22 @@ from relay.tui import (
     initial_stream_index,
     move_command_selection,
     next_stream_index,
+    normalize_terminal_environment,
     normalize_display_text,
+    parse_natural_workflow,
     prefers_fast_direct_route,
     normalized_select_value,
+    resolve_agent_reference,
+    resolve_approval_mode_reference,
+    resolve_task_reference,
     resolve_slash_command,
+    simplify_natural_command_text,
     should_prompt_for_workflow,
     should_show_command_overlay,
     split_transcript_for_streaming,
     summarize_result,
     thinking_label,
+    translate_natural_command,
     toggle_progress_drawer_state,
     RelayShellApp,
     workflow_preview,
@@ -148,6 +155,193 @@ class TuiHelpersTests(unittest.TestCase):
         self.assertTrue(toggle_progress_drawer_state(False))
         self.assertFalse(toggle_progress_drawer_state(True))
 
+    def test_natural_command_helpers_support_english_and_korean(self) -> None:
+        tempdir, service, _root = self._create_service()
+        self.addCleanup(tempdir.cleanup)
+        agents = service.list_user_agents()
+        self.assertEqual(simplify_natural_command_text("  Show   Agent Status?! "), "show agent status")
+        self.assertEqual(resolve_agent_reference("제미나이 메인으로 바꿔줘", agents), "gemini-main")
+        self.assertEqual(resolve_agent_reference("switch to qwen as main provider", agents), "qwen-main")
+        self.assertEqual(resolve_approval_mode_reference("승인 모드 기본으로"), "default")
+        self.assertEqual(resolve_approval_mode_reference("set approval mode to auto edit"), "auto-edit")
+        self.assertEqual(
+            translate_natural_command("Show agent status", agents=agents, progress_open=False),
+            "/agents",
+        )
+        self.assertEqual(
+            translate_natural_command("에이전트 상태 보여줘", agents=agents, progress_open=False),
+            "/agents",
+        )
+        self.assertEqual(
+            translate_natural_command("Use Gemini as main provider", agents=agents, progress_open=False),
+            "/provider use gemini-main",
+        )
+        self.assertEqual(
+            translate_natural_command("제미나이 메인으로 바꿔줘", agents=agents, progress_open=False),
+            "/provider use gemini-main",
+        )
+        self.assertEqual(
+            translate_natural_command("Log in to Qwen", agents=agents, progress_open=False),
+            "/login qwen-main",
+        )
+        self.assertEqual(
+            translate_natural_command("큐웬 로그인", agents=agents, progress_open=False),
+            "/login qwen-main",
+        )
+        self.assertEqual(
+            translate_natural_command("Set approval mode to plan", agents=agents, progress_open=False),
+            "/approval-mode plan",
+        )
+        self.assertEqual(
+            translate_natural_command("승인 모드 기본으로 설정", agents=agents, progress_open=False),
+            "/approval-mode default",
+        )
+        self.assertEqual(
+            translate_natural_command("Show progress", agents=agents, progress_open=False),
+            "/progress on",
+        )
+        self.assertEqual(
+            translate_natural_command("진행상황 숨겨줘", agents=agents, progress_open=True),
+            "/progress off",
+        )
+        self.assertEqual(
+            translate_natural_command("Resume the last workflow", agents=agents, progress_open=False),
+            "/resume last",
+        )
+        self.assertEqual(
+            translate_natural_command("마지막 작업 다시", agents=agents, progress_open=False),
+            "/rerun last",
+        )
+        self.assertEqual(
+            translate_natural_command("save this workflow as research chain", agents=agents, progress_open=False),
+            "/workflow save research chain",
+        )
+        self.assertEqual(
+            translate_natural_command("이 워크플로우 저장해줘", agents=agents, progress_open=False),
+            "/workflow save default",
+        )
+        self.assertEqual(
+            translate_natural_command("show saved workflows", agents=agents, progress_open=False),
+            "/workflow list",
+        )
+        self.assertEqual(
+            translate_natural_command("what workflows do i have", agents=agents, progress_open=False),
+            "/workflow list",
+        )
+        self.assertEqual(
+            translate_natural_command("현재 워크플로우 보여줘", agents=agents, progress_open=False),
+            "/workflow inspect active",
+        )
+        self.assertEqual(
+            translate_natural_command("show active workflow", agents=agents, progress_open=False),
+            "/workflow inspect active",
+        )
+        self.assertEqual(
+            translate_natural_command("open workflow research chain", agents=agents, progress_open=False),
+            "/workflow inspect research chain",
+        )
+        self.assertEqual(
+            translate_natural_command("rename this workflow to review chain", agents=agents, progress_open=False),
+            "/workflow rename active review chain",
+        )
+        self.assertEqual(
+            translate_natural_command("rename workflow alpha to beta", agents=agents, progress_open=False),
+            "/workflow rename alpha beta",
+        )
+        self.assertEqual(
+            translate_natural_command("delete workflow alpha", agents=agents, progress_open=False),
+            "/workflow delete alpha",
+        )
+        self.assertEqual(
+            translate_natural_command("이 워크플로우 지워줘", agents=agents, progress_open=False),
+            "/workflow delete active",
+        )
+        self.assertEqual(
+            translate_natural_command("use workflow research chain", agents=agents, progress_open=False),
+            "/workflow use research chain",
+        )
+        self.assertEqual(
+            translate_natural_command("워크플로우 사용 research chain", agents=agents, progress_open=False),
+            "/workflow use research chain",
+        )
+        self.assertEqual(
+            translate_natural_command("name this workflow docs flow", agents=agents, progress_open=False),
+            "/workflow save docs flow",
+        )
+        self.assertEqual(
+            translate_natural_command("이 워크플로우를 문서흐름으로 저장해줘", agents=agents, progress_open=False),
+            "/workflow save 문서흐름",
+        )
+
+    def test_natural_workflow_parser_supports_english_and_korean(self) -> None:
+        tempdir, service, _root = self._create_service()
+        self.addCleanup(tempdir.cleanup)
+        agents = service.list_user_agents()
+        self.assertEqual(resolve_task_reference("then qwen review it"), "review")
+        self.assertEqual(resolve_task_reference("그다음 큐웬이 리뷰해줘"), "review")
+        english = parse_natural_workflow(
+            "Use Gemini as main, then let Qwen review it",
+            agents=agents,
+        )
+        assert english is not None
+        self.assertEqual(english["main_agent"], "gemini-main")
+        self.assertEqual(english["steps"][0]["agent_name"], "qwen-main")
+        self.assertEqual(english["steps"][0]["task_type"], "review")
+        self.assertTrue(english["send_back"])
+        korean = parse_natural_workflow(
+            "제미나이 메인으로 그다음 큐웬이 리뷰해줘",
+            agents=agents,
+        )
+        assert korean is not None
+        self.assertEqual(korean["main_agent"], "gemini-main")
+        self.assertEqual(korean["steps"][0]["agent_name"], "qwen-main")
+        self.assertEqual(korean["steps"][0]["task_type"], "review")
+        english_chain = parse_natural_workflow(
+            "Use Gemini as main, then let Qwen review it, then let Codex implement it, and finally send it back to Gemini",
+            agents=agents,
+        )
+        assert english_chain is not None
+        self.assertEqual(english_chain["main_agent"], "gemini-main")
+        self.assertEqual([step["agent_name"] for step in english_chain["steps"]], ["qwen-main", "codex-main"])
+        self.assertEqual([step["task_type"] for step in english_chain["steps"]], ["review", "implement"])
+        self.assertTrue(english_chain["send_back"])
+        korean_chain = parse_natural_workflow(
+            "제미나이 메인으로 그다음 큐웬이 리뷰하고 다음 코덱스가 구현한 다음 마지막엔 다시 제미나이로 돌려줘",
+            agents=agents,
+        )
+        assert korean_chain is not None
+        self.assertEqual(korean_chain["main_agent"], "gemini-main")
+        self.assertEqual([step["agent_name"] for step in korean_chain["steps"]], ["qwen-main", "codex-main"])
+        self.assertEqual([step["task_type"] for step in korean_chain["steps"]], ["review", "implement"])
+        self.assertTrue(korean_chain["send_back"])
+        self.assertIsNone(parse_natural_workflow("Gemini가 뭐 잘하는지 설명해줘", agents=agents))
+
+    def test_input_submission_prioritizes_natural_workflow_over_natural_command(self) -> None:
+        tempdir, service, _root = self._create_service()
+        self.addCleanup(tempdir.cleanup)
+        app = RelayShellApp(service)
+
+        class Event:
+            class InputObj:
+                id = "prompt-input"
+
+                def __init__(self, value: str) -> None:
+                    self.value = value
+
+            def __init__(self, value: str) -> None:
+                self.input = self.InputObj(value)
+                self.value = value
+
+        with mock.patch.object(app, "refresh_ui"), mock.patch.object(app, "_add_notice") as add_notice:
+            app.on_input_submitted(
+                Event("Use Gemini as main, then let Qwen review it, then let Codex implement it, and finally send it back to Gemini")
+            )
+        active = app.store.get_active_workflow()
+        assert active is not None
+        self.assertEqual(active["main_agent"], "gemini-main")
+        self.assertEqual([step["agent_name"] for step in active["steps"]], ["qwen-main", "codex-main"])
+        self.assertIn("Pinned workflow:", add_notice.call_args_list[-1][0][0])
+
     def test_display_text_normalization_strips_ansi_and_keeps_brackets_literal(self) -> None:
         raw = "\x1b[31m[hello]\x1b[0m world"
         normalized = normalize_display_text(raw)
@@ -158,6 +352,18 @@ class TuiHelpersTests(unittest.TestCase):
     def test_export_file_name_uses_stable_suffix(self) -> None:
         name = export_file_name("transcript")
         self.assertTrue(name.endswith("-transcript.txt"))
+
+    def test_fullscreen_run_normalizes_dumb_terminal_environment(self) -> None:
+        with mock.patch.dict(os.environ, {"TERM": "dumb", "COLORTERM": ""}, clear=False):
+            normalize_terminal_environment(inline=False)
+            self.assertEqual(os.environ["TERM"], "xterm-256color")
+            self.assertEqual(os.environ["COLORTERM"], "truecolor")
+
+    def test_inline_run_keeps_existing_terminal_environment(self) -> None:
+        with mock.patch.dict(os.environ, {"TERM": "dumb", "COLORTERM": ""}, clear=False):
+            normalize_terminal_environment(inline=True)
+            self.assertEqual(os.environ["TERM"], "dumb")
+            self.assertEqual(os.environ["COLORTERM"], "")
 
     def test_thinking_label_and_stream_helpers(self) -> None:
         self.assertIn("Thinking with claude-main", thinking_label("claude-main", 1))
@@ -242,6 +448,18 @@ class TuiHelpersTests(unittest.TestCase):
         self.assertIsNone(payload["session_id"])
         self.assertEqual(len(payload["views"]), 1)
         self.assertEqual(payload["views"][0]["run"]["status"], "completed")
+        self.assertEqual(
+            payload["views"][0]["packet"]["input_payload"]["original_result"]["display_text"],
+            "handled: 2+2",
+        )
+        self.assertIn(
+            "captured in packet context",
+            payload["views"][0]["snapshot"]["artifacts"]["conversation_excerpt"],
+        )
+        self.assertNotIn(
+            "Original answer from claude-main:\nhandled: 2+2",
+            payload["views"][0]["snapshot"]["artifacts"]["conversation_excerpt"],
+        )
         self.assertIsNotNone(payload["final_output"])
         self.assertIn("> 2+2", payload["transcript"])
         self.assertIn("[Original - claude-main]", payload["transcript"])
@@ -380,6 +598,94 @@ class TuiHelpersTests(unittest.TestCase):
         self.assertIn("recommended for", text)
         self.assertIn("Approval mode:", text)
 
+    def test_workflow_list_command_shows_saved_and_active_workflows(self) -> None:
+        tempdir, service, root = self._create_service()
+        self.addCleanup(tempdir.cleanup)
+        app = RelayShellApp(service, store=WorkflowStore(root / "workflow_state.json"))
+        first = {
+            "id": "wf_alpha",
+            "name": "Alpha Flow",
+            "main_agent": "gemini-main",
+            "mode": "workflow",
+            "send_back": True,
+            "steps": [{"id": "step_1", "agent_name": "qwen-main", "task_type": "review", "label": "Review"}],
+        }
+        second = {
+            "id": "wf_beta",
+            "name": "Beta Flow",
+            "main_agent": "claude-main",
+            "mode": "workflow",
+            "send_back": False,
+            "steps": [],
+        }
+        app.store.save_workflow(first, set_active=True)
+        app.store.save_workflow(second, set_active=False)
+        with mock.patch.object(app, "_add_notice") as add_notice:
+            app._handle_slash_command("/workflow list")
+        text = add_notice.call_args[0][0]
+        self.assertIn("Saved workflows:", text)
+        self.assertIn("* Alpha Flow", text)
+        self.assertIn("- Beta Flow", text)
+
+    def test_workflow_inspect_command_shows_active_workflow(self) -> None:
+        tempdir, service, root = self._create_service()
+        self.addCleanup(tempdir.cleanup)
+        app = RelayShellApp(service, store=WorkflowStore(root / "workflow_state.json"))
+        workflow = {
+            "id": "wf_alpha",
+            "name": "Alpha Flow",
+            "main_agent": "gemini-main",
+            "mode": "workflow",
+            "send_back": True,
+            "steps": [{"id": "step_1", "agent_name": "qwen-main", "task_type": "review", "label": "Review"}],
+        }
+        app.store.save_workflow(workflow, set_active=True)
+        with mock.patch.object(app, "_add_notice") as add_notice:
+            app._handle_slash_command("/workflow inspect")
+        text = add_notice.call_args[0][0]
+        self.assertIn("* Alpha Flow", text)
+        self.assertIn("main: gemini-main", text)
+        self.assertIn("1. qwen-main -> Review [Review]", text)
+
+    def test_workflow_rename_command_updates_active_workflow(self) -> None:
+        tempdir, service, root = self._create_service()
+        self.addCleanup(tempdir.cleanup)
+        app = RelayShellApp(service, store=WorkflowStore(root / "workflow_state.json"))
+        workflow = {
+            "id": "wf_alpha",
+            "name": "Alpha Flow",
+            "main_agent": "gemini-main",
+            "mode": "workflow",
+            "send_back": True,
+            "steps": [{"id": "step_1", "agent_name": "qwen-main", "task_type": "review", "label": "Review"}],
+        }
+        app.store.save_workflow(workflow, set_active=True)
+        with mock.patch.object(app, "_add_notice") as add_notice:
+            app._handle_slash_command("/workflow rename active Better Flow")
+        renamed = app.store.get_active_workflow()
+        assert renamed is not None
+        self.assertEqual(renamed["name"], "Better Flow")
+        self.assertIn("Renamed workflow to Better Flow.", add_notice.call_args[0][0])
+
+    def test_workflow_delete_command_without_name_deletes_active_workflow(self) -> None:
+        tempdir, service, root = self._create_service()
+        self.addCleanup(tempdir.cleanup)
+        app = RelayShellApp(service, store=WorkflowStore(root / "workflow_state.json"))
+        workflow = {
+            "id": "wf_alpha",
+            "name": "Alpha Flow",
+            "main_agent": "gemini-main",
+            "mode": "workflow",
+            "send_back": True,
+            "steps": [{"id": "step_1", "agent_name": "qwen-main", "task_type": "review", "label": "Review"}],
+        }
+        app.store.save_workflow(workflow, set_active=True)
+        with mock.patch.object(app, "_add_notice") as add_notice:
+            app._handle_slash_command("/workflow delete")
+        self.assertIsNone(app.store.get_active_workflow())
+        self.assertEqual(app.store.list_workflows(), [])
+        self.assertIn("Deleted workflow: Alpha Flow", add_notice.call_args[0][0])
+
     def test_approval_mode_command_updates_store(self) -> None:
         tempdir, service, root = self._create_service()
         self.addCleanup(tempdir.cleanup)
@@ -396,6 +702,20 @@ class TuiHelpersTests(unittest.TestCase):
         with mock.patch.object(app, "_add_notice") as add_notice:
             app._handle_slash_command("/approval-mode")
         self.assertIn("Approval mode: default", add_notice.call_args[0][0])
+
+    def test_help_command_shows_natural_language_examples(self) -> None:
+        tempdir, service, root = self._create_service()
+        self.addCleanup(tempdir.cleanup)
+        app = RelayShellApp(service, store=WorkflowStore(root / "workflow_state.json"))
+        with mock.patch.object(app, "_refresh_logins"), mock.patch.object(app, "_add_notice") as add_notice:
+            app._handle_slash_command("/help")
+        text = add_notice.call_args[0][0]
+        self.assertIn("Common commands:", text)
+        self.assertIn("Natural-language examples:", text)
+        self.assertIn("Use Gemini as main provider", text)
+        self.assertIn("제미나이 메인으로 바꿔줘", text)
+        self.assertIn("show saved workflows", text)
+        self.assertIn("마지막 작업 이어서", text)
 
     def test_approval_mode_default_command_updates_store(self) -> None:
         tempdir, service, root = self._create_service()

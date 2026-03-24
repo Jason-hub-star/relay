@@ -15,6 +15,13 @@ def build_delegate_prompt(packet: Dict[str, Any], target_agent: Dict[str, Any]) 
     payload = packet["input_payload"]
     task_type = TaskType(packet["task_type"])
     schema = OUTPUT_SCHEMAS[task_type]
+    original_result = payload.get("original_result")
+    original_result_block = ""
+    if original_result:
+        original_result_block = f"""
+Original result:
+{json.dumps(original_result, ensure_ascii=True, indent=2)}
+"""
     return f"""You are helping another coding agent through a structured handoff.
 
 Target agent: {target_agent["name"]} ({target_agent["kind"]})
@@ -24,6 +31,7 @@ Instructions: {packet["instructions"]}
 
 Origin goal:
 {payload["goal"]}
+{original_result_block}
 
 Artifacts:
 {json.dumps(payload["artifacts"], ensure_ascii=True, indent=2)}
@@ -44,7 +52,7 @@ def build_return_prompt(
     task_type: str,
     normalized_result: Dict[str, Any],
 ) -> str:
-    compact_result = _compact_value(normalized_result)
+    compact_result = _prepare_return_payload(normalized_result)
     return f"""External result for current task.
 
 Origin task:
@@ -59,8 +67,47 @@ Task type:
 Result:
 {json.dumps(compact_result, ensure_ascii=True, indent=2)}
 
-Please continue the work using this result. Preserve ongoing intent, update the plan if needed, and continue from the latest state.
+Write the final user-facing answer only.
+Use the contributor result, but do not restate the full internal process or copy large internal lists unless they are necessary.
+Prefer a concise answer in the user's language and continue from the latest state.
 """
+
+
+def _prepare_return_payload(normalized_result: Dict[str, Any]) -> Dict[str, Any]:
+    preferred_keys = [
+        "summary",
+        "response",
+        "next_action",
+        "optimized_prompt",
+        "rationale",
+        "handoff_prompt",
+        "result",
+        "details",
+        "findings",
+        "steps",
+        "risks",
+        "changes",
+        "followups",
+        "warnings",
+        "sources",
+        "claims",
+        "sections",
+        "citations",
+        "areas",
+        "recommended_files",
+        "key_points",
+    ]
+    filtered: Dict[str, Any] = {}
+    for key in preferred_keys:
+        if key not in normalized_result:
+            continue
+        value = normalized_result[key]
+        if value in (None, "", [], {}):
+            continue
+        filtered[key] = _compact_value(value, max_string=400, max_items=6)
+    if filtered:
+        return filtered
+    return _compact_value(normalized_result, max_string=400, max_items=6)
 
 
 def _compact_value(value: Any, *, max_string: int = 1200, max_items: int = 12) -> Any:

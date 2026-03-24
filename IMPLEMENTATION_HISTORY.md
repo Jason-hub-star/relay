@@ -639,7 +639,7 @@ PYTHONPATH=src python -m unittest discover -s tests -v
 Current result:
 
 ```text
-Ran 63 tests
+Ran 70 tests
 OK
 ```
 
@@ -669,6 +669,52 @@ Additional direct spot checks beyond the automated suite:
 - saved review workflows still need a better handoff payload if the goal is to review the main AI's actual answer text rather than just the question/context
 - real Claude PTY-origin sessions remain noisy because workspace trust flows still bleed into the captured transcript
 - some old long-lived test sessions and runs remain in the local relay database from prior validation
+
+## 28. Natural-language shell and workflow-management aliases
+
+The shell command model was extended so users no longer need to remember every slash command exactly.
+
+Changes:
+
+- English/Korean natural-language aliases now map into the existing slash-command layer for:
+  - provider switching
+  - approval mode
+  - login
+  - progress
+  - rerun and resume
+  - trace
+- natural-language workflow management now supports:
+  - list
+  - inspect
+  - use
+  - save
+  - rename
+  - delete
+- `workflow` references now accept:
+  - active workflow
+  - exact saved workflow names
+  - a single partial match when unambiguous
+
+Examples:
+
+- `Use Gemini as main provider`
+- `제미나이 메인으로 바꿔줘`
+- `show saved workflows`
+- `현재 워크플로우 보여줘`
+- `rename this workflow to review chain`
+- `이 워크플로우를 문서흐름으로 저장해줘`
+- `delete this workflow`
+- `워크플로우 alpha 삭제해줘`
+
+Validation:
+
+- `tests.test_tui` now covers natural-language workflow management aliases
+- the combined suite:
+
+```text
+Ran 70 tests
+OK
+```
 
 ## Recommended Next Work
 

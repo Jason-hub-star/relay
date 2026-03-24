@@ -22,16 +22,18 @@ This is the prioritized execution checklist for `relay`.
 - [x] startup stale cleanup
 - [x] workflow transcript shows original, step, and final layers
 - [x] workflow failure is visible inline
-- [ ] reduce heavy Codex `implement` payloads
-- [ ] tune heavy-step timeout and retry policy
+- [x] reduce heavy Codex `implement` payloads
+- [x] tune heavy-step timeout and retry policy
 - [ ] audit default presets and avoid fragile heavy workflows
 
 ## P1 — Workflow Reliability
 
 - [x] compact workflow modal with visible save buttons
 - [x] modal focus and arrow-key usability
-- [ ] workflow inspect/list UX
-- [ ] workflow rename/delete UX
+- [x] workflow inspect/list UX
+- [x] workflow rename/delete UX
+- [x] English/Korean natural-language aliases for shell commands
+- [x] English/Korean natural-language aliases for workflow management
 - [ ] safer `implement` preset variants
 - [ ] better failure hints for timed-out steps
 - [ ] richer `/agents` output with current provider and workflow context
@@ -40,7 +42,7 @@ This is the prioritized execution checklist for `relay`.
 
 - [x] real Gemini direct shell validation
 - [x] real Gemini -> Codex(custom) workflow validation
-- [x] real Gemini -> Codex(implement) timeout captured inline
+- [x] real Gemini -> Codex(implement) compact-path validation
 - [ ] vendor-specific Claude live-origin strategy
 - [ ] vendor-specific Codex live-origin strategy
 - [ ] explicit compatibility summary for direct / target / origin
@@ -59,6 +61,7 @@ This is the prioritized execution checklist for `relay`.
 
 - [x] `docs/status` split introduced
 - [x] `docs/ref` split introduced
+- [x] test matrix document introduced
 - [ ] move or mirror more long-form root docs into `docs/ref`
 - [ ] add weekly operating summary template
 - [ ] add daily debugging note template
@@ -74,8 +77,8 @@ This is the prioritized execution checklist for `relay`.
 
 ## Recommended Next Sequence
 
-1. reduce heavy Codex `implement` payloads and improve timeout behavior
-2. improve workflow inspect/list so users can see what is pinned and why
-3. add provider compatibility summary for direct / target / origin
-4. add `@file` and `@dir`
-5. continue migrating doc management into `docs/`
+1. add provider compatibility summary for direct / target / origin
+2. add `@file` and `@dir`
+3. continue migrating doc management into `docs/`
+4. audit default presets and replace fragile heavy presets where needed
+5. add safer `implement` workflow variants and better timeout hints

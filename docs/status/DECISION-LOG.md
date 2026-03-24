@@ -62,3 +62,14 @@ This document records durable product and architecture decisions for `relay`.
   - root docs remain as detailed references during transition
 - rationale:
   - the project needs a fast-moving operational layer plus a stable reference layer
+
+### 2026-03-25 — Natural language should sit on top of slash commands, not replace them
+
+- status: resolved
+- decision:
+  - English/Korean natural-language control should map into the existing slash-command model
+  - workflow management should support natural aliases for list, inspect, use, save, rename, and delete
+  - slash commands remain the internal control surface and the precise fallback path
+- rationale:
+  - users want shell control without memorizing every slash command
+  - keeping slash as the underlying control layer preserves precision, safety, and debuggability

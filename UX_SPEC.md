@@ -44,6 +44,7 @@ The default shell should resemble modern AI coding CLIs:
 - minimal chrome
 - compact status line
 - slash commands
+- natural-language aliases layered on top of slash commands
 - fast keyboard-first interaction
 
 ### 4. Provider plurality, not provider chaos
@@ -144,6 +145,10 @@ When the input starts with `/`:
 
 - `/workflow`
 - `/workflow new`
+- `/workflow list`
+- `/workflow inspect`
+- `/workflow rename`
+- `/workflow delete`
 - `/workflow use`
 - `/workflow save`
 - `/workflow off`
@@ -157,6 +162,33 @@ When the input starts with `/`:
 - `/rerun last`
 - `/resume last`
 - `/help`
+
+Natural-language control rule:
+
+- English/Korean natural-language shell control is allowed
+- natural-language inputs should map into slash-command semantics instead of creating a separate control system
+- workflow management should support natural aliases for list, inspect, use, save, rename, and delete
+
+Representative natural-language examples:
+
+- provider
+  - `Use Gemini as main provider`
+  - `제미나이 메인으로 바꿔줘`
+- workflow setup
+  - `Use Gemini as main, then let Qwen review it`
+  - `제미나이 메인으로 그다음 큐웬이 리뷰해줘`
+- workflow management
+  - `show saved workflows`
+  - `show active workflow`
+  - `rename this workflow to review chain`
+  - `delete this workflow`
+  - `저장된 워크플로우 보여줘`
+  - `현재 워크플로우 보여줘`
+- recovery
+  - `Resume the last workflow`
+  - `Run the last thing again`
+  - `마지막 작업 이어서`
+  - `마지막 작업 다시`
 
 ### Recommended next commands
 
