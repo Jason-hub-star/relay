@@ -23,6 +23,21 @@ class PromptNormalizationTests(unittest.TestCase):
         raw = '[{"type":"assistant","message":{"content":[{"type":"text","text":"2 + 2 = 4"}]}},{"type":"result","result":"2 + 2 = 4"}]'
         self.assertEqual(extract_display_text(raw), "2 + 2 = 4")
 
+    def test_review_task_extracts_fenced_json_from_qwen_result_event(self) -> None:
+        raw = (
+            '[{"type":"system","subtype":"init"},'
+            '{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"..."}]}},'
+            '{"type":"result","result":"```json\\n{\\"summary\\":\\"ok\\",\\"findings\\":[],\\"next_action\\":\\"done\\"}\\n```"}]'
+        )
+        normalized = normalize_output(TaskType.REVIEW, raw)
+        self.assertEqual(normalized["summary"], "ok")
+        self.assertEqual(normalized["findings"], [])
+        self.assertEqual(normalized["next_action"], "done")
+
+    def test_extract_display_text_strips_json_fences_from_result_event(self) -> None:
+        raw = '[{"type":"result","result":"```json\\n{\\"summary\\":\\"ok\\",\\"findings\\":[],\\"next_action\\":\\"done\\"}\\n```"}]'
+        self.assertEqual(extract_display_text(raw), "ok")
+
     def test_delegate_prompt_can_include_original_result_block(self) -> None:
         packet = {
             "task_type": TaskType.CUSTOM.value,

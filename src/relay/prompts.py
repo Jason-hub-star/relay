@@ -7,6 +7,42 @@ from relay.models import TaskType
 from relay.schemas import OUTPUT_SCHEMAS
 
 
+def _strip_code_fences(text: str) -> str:
+    stripped = text.strip()
+    if not stripped.startswith("```"):
+        return stripped
+    lines = stripped.splitlines()
+    if len(lines) < 3 or lines[-1].strip() != "```":
+        return stripped
+    return "\n".join(lines[1:-1]).strip()
+
+
+def _parse_embedded_json(text: str) -> Dict[str, Any] | None:
+    stripped = _strip_code_fences(text)
+    if not stripped:
+        return None
+    candidates = [stripped]
+    try:
+        balanced = _balanced_json(stripped)
+    except ValueError:
+        pass
+    else:
+        if balanced != stripped:
+            candidates.append(balanced)
+    for candidate in candidates:
+        try:
+            value = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, list):
+            extracted = _extract_from_event_list(value)
+            if extracted is not None:
+                return extracted
+        if isinstance(value, dict):
+            return value
+    return None
+
+
 def schema_name(task_type: TaskType) -> str:
     return f"{task_type.value}_v1"
 
@@ -186,28 +222,22 @@ def _extract_from_event_list(events: List[Any]) -> Dict[str, Any] | None:
             continue
         result_value = event.get("result")
         if isinstance(result_value, str):
-            try:
-                parsed = json.loads(result_value)
-            except json.JSONDecodeError:
-                if result_value.strip():
-                    return {"result": result_value.strip()}
-            else:
-                if isinstance(parsed, dict):
-                    return parsed
+            parsed = _parse_embedded_json(result_value)
+            if parsed is not None:
+                return parsed
+            if result_value.strip():
+                return {"result": _strip_code_fences(result_value)}
         message = event.get("message")
         if isinstance(message, dict):
             content = message.get("content")
             if isinstance(content, list):
                 for chunk in content:
                     if isinstance(chunk, dict) and isinstance(chunk.get("text"), str):
-                        try:
-                            parsed = json.loads(chunk["text"])
-                        except json.JSONDecodeError:
-                            if chunk["text"].strip():
-                                return {"result": chunk["text"].strip()}
-                            continue
-                        if isinstance(parsed, dict):
+                        parsed = _parse_embedded_json(chunk["text"])
+                        if parsed is not None:
                             return parsed
+                        if chunk["text"].strip():
+                            return {"result": _strip_code_fences(chunk["text"])}
     if len(events) == 1 and isinstance(events[0], dict):
         return events[0]
     return None
